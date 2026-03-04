@@ -197,12 +197,8 @@ def sync_course(space, course):
             tmp_dir = Path(tmp)
             local_path = tmp_dir / filename
 
-            r = requests.get(f["url"], headers=HEADERS_CANVAS)
-            r.raise_for_status()
-            local_path.write_bytes(r.content)
-
             if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
-                final_path = convert_to_pdf(local_path, tmp_dir)
+                final_path = tmp_dir / (local_path.stem + ".pdf")
             else:
                 final_path = local_path
 
@@ -234,9 +230,14 @@ def sync_course(space, course):
 
             if remote_time is None or canvas_updated > remote_time:
                 try:
+                    r = requests.get(f["url"], headers=HEADERS_CANVAS)
+                    r.raise_for_status()
+                    local_path.write_bytes(r.content)
+                    if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
+                        convert_to_pdf(local_path, tmp_dir)
                     upload_file(space, str(final_path), remote_file)
                 except:
-                    log("文件上传失败")
+                    log("文件下载、转换或上传失败")
                     continue
 
 
