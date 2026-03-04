@@ -1,0 +1,33 @@
+name: Canvas Auto Sync
+
+on:
+  # schedule:
+  #   - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Install LibreOffice
+        run: |
+          sudo apt update
+          sudo apt install -y libreoffice
+
+      - name: Run Sync
+        env:
+          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+          SMH_USER_TOKEN: ${{ secrets.SMH_USER_TOKEN }}
+          CONVERT_PPT_TO_PDF: "true"
+        run: python src/main.py

@@ -1,0 +1,261 @@
+import os
+import re
+import requests
+import subprocess
+import tempfile
+from pathlib import Path
+from datetime import datetime
+
+# ==============================
+# 日志函数
+# ==============================
+
+def log(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+# ==============================
+# 基础配置
+# ==============================
+
+CANVAS_BASE_URL = "https://oc.sjtu.edu.cn"
+CANVAS_TOKEN = os.environ.get("CANVAS_TOKEN", "")
+
+SMH_BASE_URL = "https://pan.sjtu.edu.cn"
+SMH_USER_TOKEN = os.environ.get("SMH_USER_TOKEN", "")
+SAVE_ROOT = os.environ.get("SAVE_ROOT", "Canvas Files")
+
+CONVERT_PPT = os.getenv("CONVERT_PPT_TO_PDF", "false").lower() == "true"
+
+HEADERS_CANVAS = {"Authorization": f"Bearer {CANVAS_TOKEN}"}
+
+# ==========================
+# 获取 space 信息
+# ==========================
+
+def get_space_info():
+    url = f"{SMH_BASE_URL}/user/v1/space/1/personal"
+    params = {"user_token": SMH_USER_TOKEN}
+    r = requests.post(url, params=params)
+    r.raise_for_status()
+    data = r.json()
+    
+    log(f"获取空间信息成功")
+    return {
+        "libraryId": data["libraryId"],
+        "spaceId": data["spaceId"],
+        "accessToken": data["accessToken"]
+    }
+
+
+# ==========================
+# Canvas API
+# ==========================
+
+def fetch_courses():
+    url = (
+        f"{CANVAS_BASE_URL}/api/v1/users/self/favorites/courses"
+        "?include[]=term&exclude[]=enrollments&sort=nickname"
+    )
+    r = requests.get(url, headers=HEADERS_CANVAS)
+    r.raise_for_status()
+    
+    log(f"获取课程列表成功，共 {len(r.json())} 门课程")
+    return r.json()
+
+
+def parse_course(course):
+    code = course.get("course_code", "")
+    semester_match = re.search(r"\((.*?)\)", code)
+    semester = semester_match.group(1) if semester_match else "Unknown"
+
+    parts = code.split("-")
+    if len(parts) >= 6:
+        number, name_cn = parts[4], parts[-1]
+        folder = f"{number}_{name_cn}"
+    else:
+        folder = course.get("name", "Unknown")
+
+    return {
+        "course_id": str(course["id"]),
+        "semester": semester,
+        "folder": folder
+    }
+
+
+def fetch_files(course_id):
+    url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/files"
+    r = requests.get(url, headers=HEADERS_CANVAS)
+    r.raise_for_status()
+    return r.json()
+
+
+# ==========================
+# 转换
+# ==========================
+
+def convert_to_pdf(ppt_path: Path, out_dir: Path):
+    subprocess.run([
+        "soffice", "--headless",
+        "--convert-to", "pdf",
+        "--outdir", str(out_dir),
+        str(ppt_path)
+    ], check=True)
+    return out_dir / (ppt_path.stem + ".pdf")
+
+
+# ==========================
+# SMH API
+# ==========================
+
+def ensure_folder(space, dir_path):
+    """
+    创建目录
+    PUT /api/v1/directory/{LibraryId}/{SpaceId}/{DirPath}
+    """
+    url = f"{SMH_BASE_URL}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
+    params = {"access_token": space["accessToken"]}
+
+    r = requests.put(url, params=params)
+    if r.status_code not in (200, 201):
+        r.raise_for_status()
+
+
+def list_remote_dir(space, dir_path):
+    url = f"{SMH_BASE_URL}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
+    params = {
+        "access_token": space["accessToken"],
+        "with_path": "true",
+        "filter": "onlyFile"
+    }
+
+    r = requests.get(url, params=params)
+
+    if r.status_code == 404:
+        return None
+
+    r.raise_for_status()
+    return r.json().get("contents", [])
+
+
+def upload_file(space, local_path, remote_path):
+    size = os.path.getsize(local_path)
+
+    url = f"{SMH_BASE_URL}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{remote_path}"
+    params = {
+        "access_token": space["accessToken"],
+        "filesize": size,
+        "conflict_resolution_strategy": "overwrite"
+    }
+
+    r = requests.put(url, params=params)
+    resp = r.json()
+    r.raise_for_status()
+
+    domain = resp.get("domain")
+    path = resp.get("path")
+    headers = resp.get("headers")
+    confirm_key = resp.get("confirmKey")
+
+    if not all([domain, path, headers, confirm_key]):
+        log("获取上传地址失败")
+        return
+    
+    upload_url = f"https://{domain}/{path.lstrip('/')}"
+    with open(local_path, "rb") as f:
+        r2 = requests.put(upload_url, headers=headers, data=f)
+        r2.raise_for_status()
+        
+    confirm_url = f"{SMH_BASE_URL}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{confirm_key}"
+    confirm_params = f"confirm&access_token={space['accessToken']}&conflict_resolution_strategy=overwrite"
+    r3 = requests.post(confirm_url, params=confirm_params)
+    r3.raise_for_status()
+
+# ==========================
+# 同步逻辑
+# ==========================
+
+def sync_course(space, course):
+    try:
+        files = fetch_files(course["course_id"])
+    except:
+        files = []
+
+    for f in files:
+        filename = f["filename"]
+        lower = filename.lower()
+
+        if not lower.endswith((".ppt", ".pptx", ".pdf")):
+            continue
+
+        canvas_updated = datetime.fromisoformat(
+            f["updated_at"].replace("Z", "+00:00")
+        )
+        
+        # tmp
+        if f["size"] > 1000000:
+            continue
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            local_path = tmp_dir / filename
+
+            r = requests.get(f["url"], headers=HEADERS_CANVAS)
+            r.raise_for_status()
+            local_path.write_bytes(r.content)
+
+            if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
+                final_path = convert_to_pdf(local_path, tmp_dir)
+            else:
+                final_path = local_path
+
+            remote_folder = str(Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder']))
+            remote_file = f"{remote_folder}/{final_path.name}"
+
+            try:
+                remote_list = list_remote_dir(space, remote_folder)
+            except:
+                log("检查目录失败")
+                continue
+
+            if remote_list is None:
+                try:
+                    ensure_folder(space, remote_folder)
+                except:
+                    log("创建目录失败")
+                    continue
+                remote_list = []
+
+            matched = [x for x in remote_list if x["name"] == final_path.name]
+
+            if matched:
+                remote_time = datetime.fromisoformat(
+                    matched[0]["modificationTime"].replace("Z", "+00:00")
+                )
+            else:
+                remote_time = None
+
+            if remote_time is None or canvas_updated > remote_time:
+                try:
+                    upload_file(space, str(final_path), remote_file)
+                except:
+                    log("文件上传失败")
+                    continue
+
+
+# ==========================
+# 主程序
+# ==========================
+
+def main():
+    space = get_space_info()
+    courses = fetch_courses()
+    parsed = [parse_course(c) for c in courses]
+
+    for course in parsed:
+        log(f"处理课程 {course['course_id']}")
+        sync_course(space, course)
+
+
+if __name__ == "__main__":
+    main()
