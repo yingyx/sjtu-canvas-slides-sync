@@ -182,6 +182,22 @@ def sync_course(space, course):
         files = fetch_files(course["course_id"])
     except:
         files = []
+        
+    remote_folder = urllib.parse.unquote(str(Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder'])).replace("\\", "/"))
+
+    try:
+        remote_list = list_remote_dir(space, remote_folder)
+    except:
+        log("检查目录失败")
+        return
+
+    if remote_list is None:
+        try:
+            ensure_folder(space, remote_folder)
+        except:
+            log("创建目录失败")
+            return
+        remote_list = []
 
     for f in files:
         filename = f["filename"]
@@ -203,23 +219,8 @@ def sync_course(space, course):
             else:
                 final_path = local_path
 
-            remote_folder = (Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder'])).name
             remote_file = f"{remote_folder}/{final_path.name}"
-
-            try:
-                remote_list = list_remote_dir(space, remote_folder)
-            except:
-                log("检查目录失败")
-                continue
-
-            if remote_list is None:
-                try:
-                    ensure_folder(space, remote_folder)
-                except:
-                    log("创建目录失败")
-                    continue
-                remote_list = []
-
+            
             matched = [x for x in remote_list if x["name"] == urllib.parse.unquote(final_path.name)]
 
             if matched:
