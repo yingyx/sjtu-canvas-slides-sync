@@ -85,7 +85,8 @@ def parse_course(course):
 
 def fetch_files(course_id):
     url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/files"
-    r = requests.get(url, headers=HEADERS_CANVAS)
+    params = {"per_page": 1000}
+    r = requests.get(url, headers=HEADERS_CANVAS, params=params)
     r.raise_for_status()
     return r.json()
 
