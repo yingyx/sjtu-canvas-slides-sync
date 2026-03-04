@@ -191,10 +191,6 @@ def sync_course(space, course):
         canvas_updated = datetime.fromisoformat(
             f["updated_at"].replace("Z", "+00:00")
         )
-        
-        # tmp
-        if f["size"] > 1000000:
-            continue
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
