@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from datetime import datetime
+import urllib.parse
 
 # ==============================
 # 日志函数
@@ -202,7 +203,7 @@ def sync_course(space, course):
             else:
                 final_path = local_path
 
-            remote_folder = str(Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder']))
+            remote_folder = (Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder'])).name
             remote_file = f"{remote_folder}/{final_path.name}"
 
             try:
@@ -219,7 +220,7 @@ def sync_course(space, course):
                     continue
                 remote_list = []
 
-            matched = [x for x in remote_list if x["name"] == final_path.name]
+            matched = [x for x in remote_list if x["name"] == urllib.parse.unquote(final_path.name)]
 
             if matched:
                 remote_time = datetime.fromisoformat(
