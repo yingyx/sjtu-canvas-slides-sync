@@ -13,6 +13,11 @@ on:
         options:
           - 'false'
           - 'true'
+      max_file_size:
+        description: 'Maximum file size in MB (0 for unlimited)'
+        required: false
+        default: '1024'
+        type: string
 
 jobs:
   sync:
@@ -39,6 +44,10 @@ jobs:
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           SMH_USER_TOKEN: ${{ secrets.SMH_USER_TOKEN }}
           CONVERT_PPT_TO_PDF: "true"
+          SAVE_ROOT: "Canvas Files"
+          MAX_FILE_SIZE: ${{ inputs.max_file_size || '1024' }}
+          FILE_EXTENSIONS: ".ppt,.pptx,.pdf"
+          CONVERT_EXTENSIONS: ".ppt,.pptx"
         run: |
           SYNC_ALL_FLAG=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.sync_all }}" = "true" ]; then

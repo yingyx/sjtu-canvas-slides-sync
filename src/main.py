@@ -30,29 +30,14 @@ SAVE_ROOT = os.environ.get("SAVE_ROOT", "Canvas Files")
 
 CONVERT_PPT = os.getenv("CONVERT_PPT_TO_PDF", "false").lower() == "true"
 
+# 文件配置
+MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", "0"))  # 单位：MB，0表示无限制
+FILE_EXTENSIONS = set(s.strip().lower() for s in os.environ.get("FILE_EXTENSIONS", ".ppt,.pptx,.pdf").split(","))
+CONVERT_EXTENSIONS = set(s.strip().lower() for s in os.environ.get("CONVERT_EXTENSIONS", ".ppt,.pptx").split(","))
+
 HEADERS_CANVAS = {"Authorization": f"Bearer {CANVAS_TOKEN}"}
 
-# 全局更新标志
 updated = False
-
-# ==========================
-# 获取 space 信息
-# ==========================
-
-def get_space_info():
-    url = f"{SMH_BASE_URL}/user/v1/space/1/personal"
-    params = {"user_token": SMH_USER_TOKEN}
-    r = requests.post(url, params=params)
-    r.raise_for_status()
-    data = r.json()
-    
-    log(f"获取空间信息成功")
-    return {
-        "libraryId": data["libraryId"],
-        "spaceId": data["spaceId"],
-        "accessToken": data["accessToken"]
-    }
-
 
 # ==========================
 # Canvas API
@@ -111,6 +96,20 @@ def convert_to_pdf(ppt_path: Path, out_dir: Path):
 # ==========================
 # SMH API
 # ==========================
+
+def get_space_info():
+    url = f"{SMH_BASE_URL}/user/v1/space/1/personal"
+    params = {"user_token": SMH_USER_TOKEN}
+    r = requests.post(url, params=params)
+    r.raise_for_status()
+    data = r.json()
+    
+    log(f"获取空间信息成功")
+    return {
+        "libraryId": data["libraryId"],
+        "spaceId": data["spaceId"],
+        "accessToken": data["accessToken"]
+    }
 
 def ensure_folder(space, dir_path):
     """
@@ -205,7 +204,18 @@ def sync_course(space, course):
         filename = f["filename"]
         lower = filename.lower()
 
-        if not lower.endswith((".ppt", ".pptx", ".pdf")):
+        # 检查文件后缀
+        file_ext = None
+        for ext in FILE_EXTENSIONS:
+            if lower.endswith(ext):
+                file_ext = ext
+                break
+        if file_ext is None:
+            continue
+
+        # 检查文件大小
+        if MAX_FILE_SIZE > 0 and f.get("size", 0) > MAX_FILE_SIZE * 1024 * 1024:
+            log(f"跳过文件 {filename}（超过大小限制）")
             continue
 
         canvas_updated = datetime.fromisoformat(
@@ -216,7 +226,7 @@ def sync_course(space, course):
             tmp_dir = Path(tmp)
             local_path = tmp_dir / filename
 
-            if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
+            if file_ext in CONVERT_EXTENSIONS and CONVERT_PPT:
                 final_path = tmp_dir / (local_path.stem + ".pdf")
             else:
                 final_path = local_path
@@ -237,7 +247,7 @@ def sync_course(space, course):
                     r = requests.get(f["url"], headers=HEADERS_CANVAS)
                     r.raise_for_status()
                     local_path.write_bytes(r.content)
-                    if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
+                    if file_ext in CONVERT_EXTENSIONS and CONVERT_PPT:
                         convert_to_pdf(local_path, tmp_dir)
                     upload_file(space, str(final_path), remote_file)
                     global updated
