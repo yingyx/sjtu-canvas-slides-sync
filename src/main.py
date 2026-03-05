@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import urllib.parse
+import argparse
 
 # ==============================
 # 日志函数
@@ -58,10 +59,7 @@ def get_space_info():
 # ==========================
 
 def fetch_courses():
-    url = (
-        f"{CANVAS_BASE_URL}/api/v1/users/self/favorites/courses"
-        "?include[]=term&exclude[]=enrollments&sort=nickname"
-    )
+    url = f"{CANVAS_BASE_URL}/api/v1/courses?per_page=1000"
     r = requests.get(url, headers=HEADERS_CANVAS)
     r.raise_for_status()
     
@@ -254,9 +252,22 @@ def sync_course(space, course):
 # ==========================
 
 def main():
+    parser = argparse.ArgumentParser(description="Sync Canvas files to SMH")
+    parser.add_argument('--sync-all', action='store_true', help='Sync all semesters instead of just the latest')
+    args = parser.parse_args()
+
     space = get_space_info()
     courses = fetch_courses()
     parsed = [parse_course(c) for c in courses]
+
+    semesters = set(course['semester'] for course in parsed if course['semester'] != "Unknown")
+    if semesters:
+        latest_semester = max(semesters)
+        if not args.sync_all:
+            parsed = [c for c in parsed if c['semester'] == latest_semester]
+            
+        print(latest_semester)
+        return
 
     for course in parsed:
         log(f"处理课程 {course['course_id']}")
