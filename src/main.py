@@ -3,6 +3,7 @@ import re
 import requests
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 from datetime import datetime
 import urllib.parse
@@ -29,6 +30,9 @@ SAVE_ROOT = os.environ.get("SAVE_ROOT", "Canvas Files")
 CONVERT_PPT = os.getenv("CONVERT_PPT_TO_PDF", "false").lower() == "true"
 
 HEADERS_CANVAS = {"Authorization": f"Bearer {CANVAS_TOKEN}"}
+
+# 全局更新标志
+updated = False
 
 # ==========================
 # 获取 space 信息
@@ -238,6 +242,8 @@ def sync_course(space, course):
                     if lower.endswith((".ppt", ".pptx")) and CONVERT_PPT:
                         convert_to_pdf(local_path, tmp_dir)
                     upload_file(space, str(final_path), remote_file)
+                    global updated
+                    updated = True
                 except:
                     log("文件下载、转换或上传失败")
                     continue
@@ -255,6 +261,11 @@ def main():
     for course in parsed:
         log(f"处理课程 {course['course_id']}")
         sync_course(space, course)
+
+    if updated:
+        sys.exit(0)
+    else:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
