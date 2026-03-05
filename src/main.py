@@ -265,9 +265,6 @@ def main():
         latest_semester = max(semesters)
         if not args.sync_all:
             parsed = [c for c in parsed if c['semester'] == latest_semester]
-            
-        print(latest_semester)
-        return
 
     for course in parsed:
         log(f"处理课程 {course['course_id']}")

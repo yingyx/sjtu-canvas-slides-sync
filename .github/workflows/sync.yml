@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '30 22 * * 0-4'
   workflow_dispatch:
+    inputs:
+      sync_all:
+        description: 'Sync all semesters or only the latest'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   sync:
@@ -31,7 +40,11 @@ jobs:
           SMH_USER_TOKEN: ${{ secrets.SMH_USER_TOKEN }}
           CONVERT_PPT_TO_PDF: "true"
         run: |
-          python src/main.py
+          SYNC_ALL_FLAG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.sync_all }}" = "true" ]; then
+            SYNC_ALL_FLAG="--sync-all"
+          fi
+          python src/main.py $SYNC_ALL_FLAG
           if [ $? -eq 0 ]; then
             echo "$(date)" > last_update.txt
             git config --global user.name "GitHub Actions"
