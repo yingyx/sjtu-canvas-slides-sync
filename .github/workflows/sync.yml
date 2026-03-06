@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       sync_all:
-        description: 'Sync all semesters or only the latest'
+        description: 'Sync all semesters'
         required: true
         default: 'false'
         type: choice
@@ -22,7 +22,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +37,15 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      - name: Install LibreOffice
+      - name: Install LibreOffice and CJK Fonts
         run: |
           sudo apt update
-          sudo apt install -y libreoffice
+          sudo apt install -y libreoffice fonts-noto-cjk
+          fc-cache -fv
 
       - name: Run Sync
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           SMH_USER_TOKEN: ${{ secrets.SMH_USER_TOKEN }}
           CONVERT_PPT_TO_PDF: "true"
@@ -49,17 +53,26 @@ jobs:
           MAX_FILE_SIZE: ${{ inputs.max_file_size || '1024' }}
           FILE_EXTENSIONS: ".ppt,.pptx,.pdf"
           CONVERT_EXTENSIONS: ".ppt,.pptx"
+        timeout-minutes: 60
         run: |
           SYNC_ALL_FLAG=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.sync_all }}" = "true" ]; then
             SYNC_ALL_FLAG="--sync-all"
           fi
-          python src/main.py $SYNC_ALL_FLAG
-          if [ $? -eq 0 ]; then
+
+          SYNC_EXIT_CODE=0
+          python src/main.py $SYNC_ALL_FLAG || SYNC_EXIT_CODE=$?
+
+          if [ "$SYNC_EXIT_CODE" -eq 0 ]; then
             echo "$(date)" > last_update.txt
             git config --global user.name "GitHub Actions"
             git config --global user.email "actions@github.com"
             git add last_update.txt
             git commit -m "Update sync timestamp" || echo "No changes to commit"
             git push
+          elif [ "$SYNC_EXIT_CODE" -eq 1 ]; then
+            echo "No updates detected, skipping timestamp commit."
+          else
+            echo "Sync failed with unexpected exit code: $SYNC_EXIT_CODE"
+            exit "$SYNC_EXIT_CODE"
           fi
