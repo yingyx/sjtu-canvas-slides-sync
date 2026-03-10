@@ -79,6 +79,70 @@ def fetch_files(course_id):
     return r.json()
 
 
+def fetch_file_by_id(course_id, file_id):
+    url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/files/{file_id}"
+    r = requests.get(url, headers=HEADERS_CANVAS)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_module_files(course_id):
+    """
+    当课程 Files 页面未开放时，尝试从 Modules 中收集文件。
+    """
+    modules_url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/modules"
+    modules_resp = requests.get(modules_url, headers=HEADERS_CANVAS, params={"per_page": 1000})
+    modules_resp.raise_for_status()
+    modules = modules_resp.json()
+
+    module_files = []
+    seen_file_ids = set()
+
+    for module in modules:
+        module_id = module.get("id")
+        if module_id is None:
+            continue
+
+        items_url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/modules/{module_id}/items"
+        items_resp = requests.get(items_url, headers=HEADERS_CANVAS, params={"per_page": 1000})
+        items_resp.raise_for_status()
+        items = items_resp.json()
+
+        for item in items:
+            if item.get("type") != "File":
+                continue
+
+            file_id = item.get("content_id")
+            if file_id is None or file_id in seen_file_ids:
+                continue
+
+            try:
+                file_data = fetch_file_by_id(course_id, file_id)
+            except Exception:
+                log(f"从 Modules 获取文件详情失败，file_id={file_id}")
+                continue
+
+            seen_file_ids.add(file_id)
+            module_files.append(file_data)
+
+    return module_files
+
+
+def collect_course_files(course_id):
+    try:
+        files = fetch_files(course_id)
+        return files
+    except Exception:
+        log(f"课程 {course_id} 无法访问 Files 页面，尝试从 Modules 获取文件")
+
+    try:
+        files = fetch_module_files(course_id)
+        return files
+    except Exception:
+        log(f"课程 {course_id} 从 Modules 获取文件失败")
+        return []
+
+
 # ==========================
 # 转换
 # ==========================
@@ -179,10 +243,7 @@ def upload_file(space, local_path, remote_path):
 # ==========================
 
 def sync_course(space, course):
-    try:
-        files = fetch_files(course["course_id"])
-    except:
-        files = []
+    files = collect_course_files(course["course_id"])
         
     remote_folder = urllib.parse.unquote(str(Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder'])).replace("\\", "/"))
 
@@ -266,7 +327,12 @@ def main():
     parser.add_argument('--sync-all', action='store_true', help='Sync all semesters instead of just the latest')
     args = parser.parse_args()
 
-    space = get_space_info()
+    try:
+        space = get_space_info()
+    except:
+        log("登录云盘失败，请更新 SMH_USER_TOKEN")
+        sys.exit(2)
+    
     courses = fetch_courses()
     parsed = [parse_course(c) for c in courses]
 
