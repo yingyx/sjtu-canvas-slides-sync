@@ -18,8 +18,12 @@
 | - | - |
 | CANVAS_TOKEN | 打开 [Canvas 设置页面](https://oc.sjtu.edu.cn/profile/settings)，点击 `创建新访问许可证`，随意填写用途，点击 `生成令牌`，复制令牌并填入 |
 | SMH_USER_TOKEN | 打开 [交大云盘](https://pan.sjtu.edu.cn/)，按下 `F12` 或 `Ctrl+Shift+I` 打开开发者工具，在 `应用 -> Cookie` 中找到 `USER_TOKEN`，双击对应的 `值` 一栏后复制并填入 |
+| JAAuthCookie | （可选）如不想使用 SMH_USER_TOKEN，可使用 JAAuthCookie 代替。打开 [jAccount](https://jaccount.sjtu.edu.cn/jaccount/)，按下 `F12` 或 `Ctrl+Shift+I` 打开开发者工具，在 `应用 -> Cookie` 中找到 `JAAuthCookie`，双击对应的 `值` 一栏后复制并填入。使用此方法无需定期更新 Cookie |
 
 4. 点击上方 `Actions`，选择 `Canvas Auto Sync`，并点击 `Enable workflow`（可参考 [GitHub 文档](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows)）。
+
+> [!NOTE]
+> 尽管本项目在日志输出中对 `CANVAS_TOKEN`、`SMH_USER_TOKEN`、`JAAuthCookie` 等敏感信息做掩码处理，这些令牌泄露的风险仍然存在。因此，推荐按上述第 2 步将仓库设为私密。
 
 ## 配置项
 
@@ -55,11 +59,13 @@
 
 ## 注意事项
 - 连续 60 天无文件更新后，此 workflow 可能被 GitHub 自动停用。可参考上文 [使用](#使用) 的第 4 步重新启用。
-- workflow 日志中可能包含 `CANVAS_TOKEN`、`SMH_USER_TOKEN` 等敏感信息，建议按上文 [使用](#使用) 第 2 步将仓库设置为 private。
 - 关于用量：按 1.5 分钟/工作日和 30 分钟/GB 粗略估算，GitHub 月免费额度（2000 分钟）可同步 60GB+ 文件。Canvas 每门课程默认空间约为 1000MB。本 workflow 可设置最大文件大小（默认 1GB）和单次运行超时时间（默认 60 分钟）。可在 [Billing Overview](https://github.com/settings/billing) 查看当前用量，在 [Budgets](https://github.com/settings/billing/budgets) 设置付费上限（一般默认为 `$0`，即不会产生费用）。
 
 ## TODO
 
 - [ ] 支持同步文件夹下的文件
 - [ ] 手动执行时设置更长的超时时间
-- [ ] 支持使用 JAAuthCookie 登录
+
+## 参考资料
+
+- https://github.com/1357310795/TboxWebdav

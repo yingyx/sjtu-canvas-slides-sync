@@ -1,329 +1,11 @@
-import os
-import re
-import requests
-import subprocess
-import tempfile
 import sys
-from pathlib import Path
-from datetime import datetime
-import urllib.parse
 import argparse
-
-# ==============================
-# 日志函数
-# ==============================
-
-def log(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
-
-# ==============================
-# 基础配置
-# ==============================
-
-CANVAS_BASE_URL = "https://oc.sjtu.edu.cn"
-CANVAS_TOKEN = os.environ.get("CANVAS_TOKEN", "")
-
-SMH_BASE_URL = "https://pan.sjtu.edu.cn"
-SMH_USER_TOKEN = os.environ.get("SMH_USER_TOKEN", "")
-SAVE_ROOT = os.environ.get("SAVE_ROOT", "Canvas Files")
-
-CONVERT_PPT = os.getenv("CONVERT_PPT_TO_PDF", "false").lower() == "true"
-
-# 文件配置
-MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", "0"))  # 单位：MB，0表示无限制
-FILE_EXTENSIONS = set(s.strip().lower() for s in os.environ.get("FILE_EXTENSIONS", ".ppt,.pptx,.pdf").split(","))
-CONVERT_EXTENSIONS = set(s.strip().lower() for s in os.environ.get("CONVERT_EXTENSIONS", ".ppt,.pptx").split(","))
-
-HEADERS_CANVAS = {"Authorization": f"Bearer {CANVAS_TOKEN}"}
-
-updated = False
-
-# ==========================
-# Canvas API
-# ==========================
-
-def fetch_courses():
-    url = f"{CANVAS_BASE_URL}/api/v1/courses?per_page=1000"
-    r = requests.get(url, headers=HEADERS_CANVAS)
-    r.raise_for_status()
-    
-    log(f"获取课程列表成功，共 {len(r.json())} 门课程")
-    return r.json()
-
-
-def parse_course(course):
-    code = course.get("course_code", "")
-    semester_match = re.search(r"\((.*?)\)", code)
-    semester = semester_match.group(1) if semester_match else "Unknown"
-
-    parts = code.split("-")
-    if len(parts) >= 6:
-        number, name_cn = parts[4], parts[-1]
-        folder = f"{number}_{name_cn}"
-    else:
-        folder = course.get("name", "Unknown")
-
-    return {
-        "course_id": str(course["id"]),
-        "semester": semester,
-        "folder": folder
-    }
-
-
-def fetch_files(course_id):
-    url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/files"
-    params = {"per_page": 1000}
-    r = requests.get(url, headers=HEADERS_CANVAS, params=params)
-    r.raise_for_status()
-    return r.json()
-
-
-def fetch_file_by_id(course_id, file_id):
-    url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/files/{file_id}"
-    r = requests.get(url, headers=HEADERS_CANVAS)
-    r.raise_for_status()
-    return r.json()
-
-
-def fetch_module_files(course_id):
-    """
-    当课程 Files 页面未开放时，尝试从 Modules 中收集文件。
-    """
-    modules_url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/modules"
-    modules_resp = requests.get(modules_url, headers=HEADERS_CANVAS, params={"per_page": 1000})
-    modules_resp.raise_for_status()
-    modules = modules_resp.json()
-
-    module_files = []
-    seen_file_ids = set()
-
-    for module in modules:
-        module_id = module.get("id")
-        if module_id is None:
-            continue
-
-        items_url = f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/modules/{module_id}/items"
-        items_resp = requests.get(items_url, headers=HEADERS_CANVAS, params={"per_page": 1000})
-        items_resp.raise_for_status()
-        items = items_resp.json()
-
-        for item in items:
-            if item.get("type") != "File":
-                continue
-
-            file_id = item.get("content_id")
-            if file_id is None or file_id in seen_file_ids:
-                continue
-
-            try:
-                file_data = fetch_file_by_id(course_id, file_id)
-            except Exception:
-                log(f"从 Modules 获取文件详情失败，file_id={file_id}")
-                continue
-
-            seen_file_ids.add(file_id)
-            module_files.append(file_data)
-
-    return module_files
-
-
-def collect_course_files(course_id):
-    try:
-        files = fetch_files(course_id)
-        return files
-    except Exception:
-        log(f"课程 {course_id} 无法访问 Files 页面，尝试从 Modules 获取文件")
-
-    try:
-        files = fetch_module_files(course_id)
-        return files
-    except Exception:
-        log(f"课程 {course_id} 从 Modules 获取文件失败")
-        return []
-
-
-# ==========================
-# 转换
-# ==========================
-
-def get_converted_pdf_name(source_path: Path):
-    source_ext = source_path.suffix.lower().lstrip(".") or "file"
-    return f"{source_path.stem}.from-{source_ext}.pdf"
-
-def convert_to_pdf(ppt_path: Path, out_dir: Path):
-    subprocess.run([
-        "soffice", "--headless",
-        "--convert-to", "pdf",
-        "--outdir", str(out_dir),
-        str(ppt_path)
-    ], check=True)
-    generated_path = out_dir / (ppt_path.stem + ".pdf")
-    final_path = out_dir / get_converted_pdf_name(ppt_path)
-    generated_path.replace(final_path)
-    return final_path
-
-
-# ==========================
-# SMH API
-# ==========================
-
-def get_space_info():
-    url = f"{SMH_BASE_URL}/user/v1/space/1/personal"
-    params = {"user_token": SMH_USER_TOKEN}
-    r = requests.post(url, params=params)
-    r.raise_for_status()
-    data = r.json()
-    
-    log(f"获取空间信息成功")
-    return {
-        "libraryId": data["libraryId"],
-        "spaceId": data["spaceId"],
-        "accessToken": data["accessToken"]
-    }
-
-def ensure_folder(space, dir_path):
-    """
-    创建目录
-    PUT /api/v1/directory/{LibraryId}/{SpaceId}/{DirPath}
-    """
-    url = f"{SMH_BASE_URL}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
-    params = {"access_token": space["accessToken"]}
-
-    r = requests.put(url, params=params)
-    if r.status_code not in (200, 201):
-        r.raise_for_status()
-
-
-def list_remote_dir(space, dir_path):
-    url = f"{SMH_BASE_URL}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
-    params = {
-        "access_token": space["accessToken"],
-        "with_path": "true",
-        "filter": "onlyFile"
-    }
-
-    r = requests.get(url, params=params)
-
-    if r.status_code == 404:
-        return None
-
-    r.raise_for_status()
-    return r.json().get("contents", [])
-
-
-def upload_file(space, local_path, remote_path):
-    size = os.path.getsize(local_path)
-
-    url = f"{SMH_BASE_URL}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{remote_path}"
-    params = {
-        "access_token": space["accessToken"],
-        "filesize": size,
-        "conflict_resolution_strategy": "overwrite"
-    }
-
-    r = requests.put(url, params=params)
-    resp = r.json()
-    r.raise_for_status()
-
-    domain = resp.get("domain")
-    path = resp.get("path")
-    headers = resp.get("headers")
-    confirm_key = resp.get("confirmKey")
-
-    if not all([domain, path, headers, confirm_key]):
-        log("获取上传地址失败")
-        return
-    
-    upload_url = f"https://{domain}/{path.lstrip('/')}"
-    with open(local_path, "rb") as f:
-        r2 = requests.put(upload_url, headers=headers, data=f)
-        r2.raise_for_status()
-        
-    confirm_url = f"{SMH_BASE_URL}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{confirm_key}"
-    confirm_params = f"confirm&access_token={space['accessToken']}&conflict_resolution_strategy=overwrite"
-    r3 = requests.post(confirm_url, params=confirm_params)
-    r3.raise_for_status()
-
-# ==========================
-# 同步逻辑
-# ==========================
-
-def sync_course(space, course):
-    files = collect_course_files(course["course_id"])
-        
-    remote_folder = urllib.parse.unquote(str(Path(SAVE_ROOT) / Path(course['semester']) / Path(course['folder'])).replace("\\", "/"))
-
-    try:
-        remote_list = list_remote_dir(space, remote_folder)
-    except:
-        log("检查目录失败")
-        return
-
-    if remote_list is None:
-        try:
-            ensure_folder(space, remote_folder)
-        except:
-            log("创建目录失败")
-            return
-        remote_list = []
-
-    for f in files:
-        filename = f["filename"]
-        lower = filename.lower()
-
-        # 检查文件后缀
-        file_ext = None
-        for ext in FILE_EXTENSIONS:
-            if lower.endswith(ext):
-                file_ext = ext
-                break
-        if file_ext is None:
-            continue
-
-        # 检查文件大小
-        if MAX_FILE_SIZE > 0 and f.get("size", 0) > MAX_FILE_SIZE * 1024 * 1024:
-            log(f"跳过文件 {filename}（超过大小限制）")
-            continue
-
-        canvas_updated = datetime.fromisoformat(
-            f["updated_at"].replace("Z", "+00:00")
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_dir = Path(tmp)
-            local_path = tmp_dir / filename
-            should_convert = file_ext in CONVERT_EXTENSIONS and CONVERT_PPT
-
-            if should_convert:
-                final_path = tmp_dir / get_converted_pdf_name(local_path)
-            else:
-                final_path = local_path
-
-            remote_file = f"{remote_folder}/{final_path.name}"
-            
-            matched = [x for x in remote_list if x["name"] == urllib.parse.unquote(final_path.name)]
-
-            if matched:
-                remote_time = datetime.fromisoformat(
-                    matched[0]["modificationTime"].replace("Z", "+00:00")
-                )
-            else:
-                remote_time = None
-
-            if remote_time is None or canvas_updated > remote_time:
-                try:
-                    r = requests.get(f["url"], headers=HEADERS_CANVAS)
-                    r.raise_for_status()
-                    local_path.write_bytes(r.content)
-                    if should_convert:
-                        final_path = convert_to_pdf(local_path, tmp_dir)
-                    upload_file(space, str(final_path), remote_file)
-                    global updated
-                    updated = True
-                except:
-                    log("文件下载、转换或上传失败")
-                    continue
+import requests
+from canvas_client import fetch_courses, parse_course
+from config import load_config, make_canvas_headers
+from logger import log, log_exception
+from smh_client import get_space_info, login_with_jaccount
+from sync_service import sync_course
 
 
 # ==========================
@@ -335,24 +17,69 @@ def main():
     parser.add_argument('--sync-all', action='store_true', help='Sync all semesters instead of just the latest')
     args = parser.parse_args()
 
-    try:
-        space = get_space_info()
-    except:
-        log("登录云盘失败，请更新 SMH_USER_TOKEN")
+    config = load_config()
+    if not config.canvas_token:
+        log("未检测到 CANVAS_TOKEN，请先配置后重试")
         sys.exit(2)
-    
-    courses = fetch_courses()
+
+    headers_canvas = make_canvas_headers(config.canvas_token)
+    smh_user_token = config.smh_user_token
+
+    if not smh_user_token:
+        if config.smh_jaauth_cookie:
+            log("未检测到 SMH_USER_TOKEN，尝试使用 JAAuthCookie 登录...")
+            token = login_with_jaccount(config.smh_base_url, config.smh_jaauth_cookie)
+            if token:
+                smh_user_token = token
+            else:
+                log("JAAuthCookie 登录失败")
+                sys.exit(2)
+        else:
+            log("未检测到 SMH_USER_TOKEN 或 JAAuthCookie，请提供其中之一")
+            sys.exit(2)
+
+    try:
+        space = get_space_info(config.smh_base_url, smh_user_token)
+    except requests.RequestException as exc:
+        log_exception("登录云盘失败，请检查网络和凭据", exc)
+        sys.exit(2)
+    except ValueError as exc:
+        log_exception("登录云盘失败，响应解析异常", exc)
+        log("登录云盘失败，请检查 SMH_USER_TOKEN 或 JAAuthCookie")
+        sys.exit(2)
+
+    try:
+        courses = fetch_courses(config.canvas_base_url, headers_canvas)
+    except requests.RequestException as exc:
+        log_exception("获取 Canvas 课程列表失败", exc)
+        sys.exit(2)
+    except ValueError as exc:
+        log_exception("解析 Canvas 课程列表失败", exc)
+        sys.exit(2)
+
     parsed = [parse_course(c) for c in courses]
 
     semesters = set(course['semester'] for course in parsed if course['semester'] != "Unknown")
+    mode_desc = "所有学期"
+    semester_desc = "全部学期"
+
     if semesters:
         latest_semester = max(semesters)
         if not args.sync_all:
             parsed = [c for c in parsed if c['semester'] == latest_semester]
+            mode_desc = "最新学期"
+            semester_desc = latest_semester
+    elif not args.sync_all:
+        mode_desc = "最新学期"
+        semester_desc = "Unknown"
 
+    log(f"同步模式：{mode_desc}（{semester_desc}），待处理课程数：{len(parsed)}")
+
+    updated = False
     for course in parsed:
         log(f"处理课程 {course['course_id']}")
-        sync_course(space, course)
+        if sync_course(config, headers_canvas, space, course):
+            updated = True
 
     if updated:
         sys.exit(0)
@@ -361,4 +88,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("任务被用户中断")
+        sys.exit(130)
+    except Exception as exc:
+        log_exception("程序发生未处理异常", exc)
+        sys.exit(2)
