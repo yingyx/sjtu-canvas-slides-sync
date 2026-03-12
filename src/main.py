@@ -147,6 +147,10 @@ def collect_course_files(course_id):
 # 转换
 # ==========================
 
+def get_converted_pdf_name(source_path: Path):
+    source_ext = source_path.suffix.lower().lstrip(".") or "file"
+    return f"{source_path.stem}.from-{source_ext}.pdf"
+
 def convert_to_pdf(ppt_path: Path, out_dir: Path):
     subprocess.run([
         "soffice", "--headless",
@@ -154,7 +158,10 @@ def convert_to_pdf(ppt_path: Path, out_dir: Path):
         "--outdir", str(out_dir),
         str(ppt_path)
     ], check=True)
-    return out_dir / (ppt_path.stem + ".pdf")
+    generated_path = out_dir / (ppt_path.stem + ".pdf")
+    final_path = out_dir / get_converted_pdf_name(ppt_path)
+    generated_path.replace(final_path)
+    return final_path
 
 
 # ==========================
@@ -286,9 +293,10 @@ def sync_course(space, course):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
             local_path = tmp_dir / filename
+            should_convert = file_ext in CONVERT_EXTENSIONS and CONVERT_PPT
 
-            if file_ext in CONVERT_EXTENSIONS and CONVERT_PPT:
-                final_path = tmp_dir / (local_path.stem + ".pdf")
+            if should_convert:
+                final_path = tmp_dir / get_converted_pdf_name(local_path)
             else:
                 final_path = local_path
 
@@ -308,8 +316,8 @@ def sync_course(space, course):
                     r = requests.get(f["url"], headers=HEADERS_CANVAS)
                     r.raise_for_status()
                     local_path.write_bytes(r.content)
-                    if file_ext in CONVERT_EXTENSIONS and CONVERT_PPT:
-                        convert_to_pdf(local_path, tmp_dir)
+                    if should_convert:
+                        final_path = convert_to_pdf(local_path, tmp_dir)
                     upload_file(space, str(final_path), remote_file)
                     global updated
                     updated = True

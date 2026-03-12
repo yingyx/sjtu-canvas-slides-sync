@@ -51,6 +51,8 @@
 | `CONVERT_EXTENSIONS` | 自动转换为 PDF 的文件后缀（逗号分隔） | `.ppt,.pptx` |
 | `timeout-minutes` | 单次运行超时时间（单位：分钟） | `60` |
 
+启用 PPT 转换为 PDF 后，转换后的 PDF 文件会以 `原文件名.from-原后缀.pdf` 的格式上传，以避免与 Canvas 中原有的同名 PDF 冲突。
+
 ## 注意事项
 - 连续 60 天无文件更新后，此 workflow 可能被 GitHub 自动停用。可参考上文 [使用](#使用) 的第 4 步重新启用。
 - workflow 日志中可能包含 `CANVAS_TOKEN`、`SMH_USER_TOKEN` 等敏感信息，建议按上文 [使用](#使用) 第 2 步将仓库设置为 private。
@@ -59,5 +61,5 @@
 ## TODO
 
 - [ ] 支持同步文件夹下的文件
-- [ ] 为转换的 PDF 文件设置后缀等，以防止出现同名文件冲突的问题
 - [ ] 手动执行时设置更长的超时时间
+- [ ] 支持使用 JAAuthCookie 登录
