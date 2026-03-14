@@ -46,6 +46,9 @@ def sync_course(
         remote_list = []
 
     updated = False
+    downloaded_bytes = 0
+    uploaded_bytes = 0
+    converted_count = 0
 
     for file_item in files:
         filename = file_item["filename"]
@@ -101,8 +104,11 @@ def sync_course(
                     )
                     response.raise_for_status()
                     local_path.write_bytes(response.content)
+                    downloaded_bytes += len(response.content)
                     if should_convert:
                         final_path = convert_to_pdf(local_path, tmp_dir)
+                        converted_count += 1
+                    uploaded_bytes += final_path.stat().st_size
                     upload_file(config.smh_base_url, space, str(final_path), remote_file)
                     updated = True
                 except RequestException as exc:
@@ -115,4 +121,9 @@ def sync_course(
                     log_exception(f"文件转换失败：{filename}", exc)
                     continue
 
-    return updated
+    return {
+        "updated": updated,
+        "downloaded_bytes": downloaded_bytes,
+        "uploaded_bytes": uploaded_bytes,
+        "converted_count": converted_count,
+    }

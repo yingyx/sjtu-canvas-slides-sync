@@ -76,10 +76,33 @@ def main():
     log(f"同步模式：{mode_desc}（{semester_desc}），待处理课程数：{len(parsed)}")
 
     updated = False
+    total_downloaded = 0
+    total_uploaded = 0
+    total_converted = 0
+
     for course in parsed:
         log(f"处理课程 {course['course_id']}")
-        if sync_course(config, headers_canvas, space, course):
+        result = sync_course(config, headers_canvas, space, course)
+        if result["updated"]:
             updated = True
+        total_downloaded += result["downloaded_bytes"]
+        total_uploaded += result["uploaded_bytes"]
+        total_converted += result["converted_count"]
+
+    def fmt_size(n: int) -> str:
+        if n >= 1024 * 1024 * 1024:
+            return f"{n / 1024 / 1024 / 1024:.2f} GB"
+        if n >= 1024 * 1024:
+            return f"{n / 1024 / 1024:.2f} MB"
+        if n >= 1024:
+            return f"{n / 1024:.2f} KB"
+        return f"{n} B"
+
+    log(
+        f"任务完成：下载 {fmt_size(total_downloaded)}，"
+        f"上传 {fmt_size(total_uploaded)}，"
+        f"转换 PDF {total_converted} 份"
+    )
 
     if updated:
         sys.exit(0)
