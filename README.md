@@ -42,6 +42,8 @@
 | `sync_all` | 是否同步所有学期（默认仅同步最新学期） | `false` | `true` / `false` |
 | `max_file_size` | 最大同步文件大小（单位：MB，`0` 表示无限制） | `1024` | `0` 等 |
 
+手动执行的同步步骤最长运行 360 分钟，适合使用 `sync_all` 执行首次或全量同步。
+
 ### 定时执行配置
 
 定时执行时的固定配置（在 [`sync.yml`](.github/workflows/sync.yml) 的 `Run Sync` 步骤中编辑）：
@@ -53,18 +55,17 @@
 | `MAX_FILE_SIZE` | 最大同步文件大小（单位：MB，0 表示无限制） | `1024` |
 | `FILE_EXTENSIONS` | 同步的文件后缀（逗号分隔） | `.ppt,.pptx,.pdf` |
 | `CONVERT_EXTENSIONS` | 自动转换为 PDF 的文件后缀（逗号分隔） | `.ppt,.pptx` |
-| `timeout-minutes` | 单次运行超时时间（单位：分钟） | `60` |
+| `timeout-minutes` | 定时执行的单次运行超时时间（单位：分钟） | `60` |
 
 启用 PPT 转换为 PDF 后，转换后的 PDF 文件会以 `原文件名.from-原后缀.pdf` 的格式上传，以避免与 Canvas 中原有的同名 PDF 冲突。
 
+同步时会在课程目录下保留 Canvas 的文件夹层级。文件名和目录名中的中文、空格等字符会被安全编码，不会改变云盘中显示的名称。
+
+每次运行结束后，GitHub Actions 页面会显示同步摘要，包括课程数、发现文件数、上传数、跳过数、失败数、转换数和传输流量。单个文件失败时会继续处理其余文件，但整次运行最终会标记为失败，且不会更新 `last_update.txt`；完整成功但没有文件变化则正常结束且同样不更新时间戳。
+
 ## 注意事项
 - 连续 60 天无文件更新后，此 workflow 可能被 GitHub 自动停用。可参考上文 [使用](#使用) 的第 4 步重新启用。
-- 关于用量：按 1.5 分钟/工作日和 30 分钟/GB 粗略估算，GitHub 月免费额度（2000 分钟）可同步 60GB+ 文件。Canvas 每门课程默认空间约为 1000MB。本 workflow 可设置最大文件大小（默认 1GB）和单次运行超时时间（默认 60 分钟）。可在 [Billing Overview](https://github.com/settings/billing) 查看当前用量，在 [Budgets](https://github.com/settings/billing/budgets) 设置付费上限（一般默认为 `$0`，即不会产生费用）。
-
-## TODO
-
-- [ ] 支持同步文件夹下的文件
-- [ ] 手动执行时设置更长的超时时间
+- 关于用量：按 1.5 分钟/工作日和 30 分钟/GB 粗略估算，GitHub 月免费额度（2000 分钟）可同步 60GB+ 文件。Canvas 每门课程默认空间约为 1000MB。本 workflow 可设置最大文件大小（默认 1GB）；定时执行超时为 60 分钟，手动执行超时为 360 分钟。可在 [Billing Overview](https://github.com/settings/billing) 查看当前用量，在 [Budgets](https://github.com/settings/billing/budgets) 设置付费上限（一般默认为 `$0`，即不会产生费用）。
 
 ## 参考资料
 
