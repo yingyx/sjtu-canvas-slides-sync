@@ -94,7 +94,8 @@ def sync_course(
     remote_lists: dict[str, list[dict]] = {remote_folder: remote_list}
 
     for file_item in files:
-        filename = Path(str(file_item["filename"]).replace("\\", "/")).name
+        filename_parts = safe_path_parts(str(file_item.get("filename", "")))
+        filename = filename_parts[-1] if filename_parts else f"file-{file_item.get('id', 'unknown')}"
         lower = filename.lower()
 
         file_ext = None

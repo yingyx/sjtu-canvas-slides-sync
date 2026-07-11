@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from config import AppConfig
-from sync_service import SyncResult, remote_path, sync_course
+from sync_service import SyncResult, remote_path, safe_path_parts, sync_course
 
 
 def make_config() -> AppConfig:
@@ -31,6 +31,10 @@ class SyncServiceTests(unittest.TestCase):
             remote_path("Canvas Files", "..", "课程", "课件\\第一章", "bad\x00.pdf"),
             "Canvas Files/课程/课件/第一章/bad.pdf",
         )
+
+    def test_safe_path_parts_sanitizes_untrusted_filename(self):
+        self.assertEqual(safe_path_parts("../bad\x00/name.pdf"), ["bad", "name.pdf"])
+        self.assertEqual(safe_path_parts("../.."), [])
 
     def test_sync_result_merge(self):
         total = SyncResult(updated_count=1, downloaded_bytes=10)
