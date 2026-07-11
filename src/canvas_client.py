@@ -8,12 +8,32 @@ from logger import log, log_exception
 REQUEST_TIMEOUT = 30
 
 
-def fetch_courses(canvas_base_url: str, headers_canvas: dict[str, str]) -> list[dict]:
-    url = f"{canvas_base_url}/api/v1/courses?per_page=1000"
-    response = requests.get(url, headers=headers_canvas, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
+def fetch_paginated(url: str, headers_canvas: dict[str, str], params: dict | None = None) -> list[dict]:
+    items: list[dict] = []
+    next_url: str | None = url
+    next_params = params
 
-    courses = response.json()
+    while next_url:
+        response = requests.get(
+            next_url,
+            headers=headers_canvas,
+            params=next_params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        page = response.json()
+        if not isinstance(page, list):
+            raise ValueError("Canvas 分页响应不是列表")
+        items.extend(page)
+        next_url = response.links.get("next", {}).get("url")
+        next_params = None
+
+    return items
+
+
+def fetch_courses(canvas_base_url: str, headers_canvas: dict[str, str]) -> list[dict]:
+    url = f"{canvas_base_url}/api/v1/courses"
+    courses = fetch_paginated(url, headers_canvas, {"per_page": 100})
     log(f"获取课程列表成功，共 {len(courses)} 门课程")
     return courses
 
@@ -39,15 +59,33 @@ def parse_course(course: dict) -> dict[str, str]:
 
 def fetch_files(canvas_base_url: str, headers_canvas: dict[str, str], course_id: str) -> list[dict]:
     url = f"{canvas_base_url}/api/v1/courses/{course_id}/files"
-    params = {"per_page": 1000}
-    response = requests.get(
-        url,
-        headers=headers_canvas,
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
+    return fetch_paginated(url, headers_canvas, {"per_page": 100})
+
+
+def fetch_folders(canvas_base_url: str, headers_canvas: dict[str, str], course_id: str) -> list[dict]:
+    url = f"{canvas_base_url}/api/v1/courses/{course_id}/folders"
+    return fetch_paginated(url, headers_canvas, {"per_page": 100})
+
+
+def add_folder_paths(files: list[dict], folders: list[dict]) -> list[dict]:
+    folder_paths: dict[int, str] = {}
+    for folder in folders:
+        folder_id = folder.get("id")
+        full_name = str(folder.get("full_name", ""))
+        if folder_id is None:
+            continue
+        parts = full_name.replace("\\", "/").split("/")
+        folder_paths[folder_id] = "/".join(parts[1:]) if len(parts) > 1 else ""
+
+    enriched: list[dict] = []
+    for file_item in files:
+        item = dict(file_item)
+        folder_id = item.get("folder_id")
+        if folder_id not in folder_paths:
+            raise ValueError(f"找不到文件所属目录，folder_id={folder_id}")
+        item["folder_path"] = folder_paths[folder_id]
+        enriched.append(item)
+    return enriched
 
 
 def fetch_file_by_id(
@@ -68,14 +106,7 @@ def fetch_module_files(
     course_id: str
 ) -> list[dict]:
     modules_url = f"{canvas_base_url}/api/v1/courses/{course_id}/modules"
-    modules_resp = requests.get(
-        modules_url,
-        headers=headers_canvas,
-        params={"per_page": 1000},
-        timeout=REQUEST_TIMEOUT,
-    )
-    modules_resp.raise_for_status()
-    modules = modules_resp.json()
+    modules = fetch_paginated(modules_url, headers_canvas, {"per_page": 100})
 
     module_files: list[dict] = []
     seen_file_ids: set[int] = set()
@@ -86,14 +117,7 @@ def fetch_module_files(
             continue
 
         items_url = f"{canvas_base_url}/api/v1/courses/{course_id}/modules/{module_id}/items"
-        items_resp = requests.get(
-            items_url,
-            headers=headers_canvas,
-            params={"per_page": 1000},
-            timeout=REQUEST_TIMEOUT,
-        )
-        items_resp.raise_for_status()
-        items = items_resp.json()
+        items = fetch_paginated(items_url, headers_canvas, {"per_page": 100})
 
         for item in items:
             if item.get("type") != "File":
@@ -123,20 +147,27 @@ def collect_course_files(
     headers_canvas: dict[str, str],
     course_id: str
 ) -> list[dict]:
+    files: list[dict]
     try:
-        return fetch_files(canvas_base_url, headers_canvas, course_id)
+        files = fetch_files(canvas_base_url, headers_canvas, course_id)
     except requests.RequestException as exc:
         log_exception(f"课程 {course_id} 无法访问 Files 页面", exc)
         log(f"课程 {course_id} 无法访问 Files 页面，尝试从 Modules 获取文件")
     except ValueError as exc:
         log_exception(f"课程 {course_id} Files 响应解析失败", exc)
         log(f"课程 {course_id} Files 响应解析失败，尝试从 Modules 获取文件")
+    else:
+        folders = fetch_folders(canvas_base_url, headers_canvas, course_id)
+        return add_folder_paths(files, folders)
 
     try:
-        return fetch_module_files(canvas_base_url, headers_canvas, course_id)
+        files = fetch_module_files(canvas_base_url, headers_canvas, course_id)
     except requests.RequestException as exc:
         log_exception(f"课程 {course_id} 从 Modules 获取文件失败", exc)
         return []
     except ValueError as exc:
         log_exception(f"课程 {course_id} Modules 响应解析失败", exc)
         return []
+
+    folders = fetch_folders(canvas_base_url, headers_canvas, course_id)
+    return add_folder_paths(files, folders)

@@ -16,6 +16,23 @@ from smh_client import ensure_folder, list_remote_dir, upload_file
 REQUEST_TIMEOUT = 60
 
 
+def safe_path_parts(path: str) -> list[str]:
+    parts: list[str] = []
+    for raw_part in path.replace("\\", "/").split("/"):
+        part = "".join(char for char in raw_part if ord(char) >= 32).strip()
+        if not part or part in (".", ".."):
+            continue
+        parts.append(part.replace("/", "_").replace("\\", "_"))
+    return parts
+
+
+def remote_path(*parts: str) -> str:
+    safe_parts: list[str] = []
+    for part in parts:
+        safe_parts.extend(safe_path_parts(part))
+    return "/".join(safe_parts)
+
+
 def sync_course(
     config: AppConfig,
     headers_canvas: dict[str, str],
@@ -24,9 +41,7 @@ def sync_course(
 ) -> bool:
     files = collect_course_files(config.canvas_base_url, headers_canvas, course["course_id"])
 
-    remote_folder = urllib.parse.unquote(
-        str(Path(config.save_root) / Path(course["semester"]) / Path(course["folder"])).replace("\\", "/")
-    )
+    remote_folder = remote_path(config.save_root, course["semester"], course["folder"])
 
     try:
         remote_list = list_remote_dir(config.smh_base_url, space, remote_folder)
@@ -51,7 +66,7 @@ def sync_course(
     converted_count = 0
 
     for file_item in files:
-        filename = file_item["filename"]
+        filename = Path(str(file_item["filename"]).replace("\\", "/")).name
         lower = filename.lower()
 
         file_ext = None
@@ -74,6 +89,21 @@ def sync_course(
         with tempfile.TemporaryDirectory() as temp_dir:
             tmp_dir = Path(temp_dir)
             local_path = tmp_dir / filename
+            file_remote_folder = remote_path(remote_folder, file_item.get("folder_path", ""))
+            if file_remote_folder != remote_folder:
+                try:
+                    ensure_folder(config.smh_base_url, space, file_remote_folder)
+                except RequestException as exc:
+                    log_exception(f"创建云盘子目录失败：{file_remote_folder}", exc)
+                    continue
+                try:
+                    folder_list = list_remote_dir(config.smh_base_url, space, file_remote_folder)
+                except (RequestException, ValueError) as exc:
+                    log_exception(f"检查云盘子目录失败：{file_remote_folder}", exc)
+                    continue
+                current_remote_list = folder_list or []
+            else:
+                current_remote_list = remote_list
             should_convert = file_ext in config.convert_extensions and config.convert_ppt
 
             if should_convert:
@@ -81,10 +111,10 @@ def sync_course(
             else:
                 final_path = local_path
 
-            remote_file = f"{remote_folder}/{final_path.name}"
+            remote_file = remote_path(file_remote_folder, final_path.name)
             matched = [
                 item
-                for item in remote_list
+                for item in current_remote_list
                 if item["name"] == urllib.parse.unquote(final_path.name)
             ]
 
