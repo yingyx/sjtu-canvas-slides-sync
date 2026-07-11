@@ -22,6 +22,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    concurrency:
+      group: canvas-sync-${{ github.repository }}
+      cancel-in-progress: false
 
     permissions:
       contents: write
@@ -37,6 +40,17 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
+      - name: Run Tests
+        run: |
+          python -m unittest discover -s tests -v
+          python -m compileall -q src tests
+
+      - name: Cache APT Packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-libreoffice-fonts-noto-cjk-v1
+
       - name: Install LibreOffice and CJK Fonts
         run: |
           sudo apt update
@@ -48,12 +62,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           SMH_USER_TOKEN: ${{ secrets.SMH_USER_TOKEN }}
+          JAAuthCookie: ${{ secrets.JAAuthCookie }}
           CONVERT_PPT_TO_PDF: "true"
           SAVE_ROOT: "Canvas Files"
           MAX_FILE_SIZE: ${{ inputs.max_file_size || '1024' }}
           FILE_EXTENSIONS: ".ppt,.pptx,.pdf"
           CONVERT_EXTENSIONS: ".ppt,.pptx"
-        timeout-minutes: 60
+        timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 60 }}
         run: |
           SYNC_ALL_FLAG=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.sync_all }}" = "true" ]; then
