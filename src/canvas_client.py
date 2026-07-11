@@ -2,6 +2,7 @@ import re
 
 import requests
 
+from http_client import request
 from logger import log, log_exception
 
 
@@ -14,7 +15,8 @@ def fetch_paginated(url: str, headers_canvas: dict[str, str], params: dict | Non
     next_params = params
 
     while next_url:
-        response = requests.get(
+        response = request(
+            "GET",
             next_url,
             headers=headers_canvas,
             params=next_params,
@@ -95,7 +97,7 @@ def fetch_file_by_id(
     file_id: int
 ) -> dict:
     url = f"{canvas_base_url}/api/v1/courses/{course_id}/files/{file_id}"
-    response = requests.get(url, headers=headers_canvas, timeout=REQUEST_TIMEOUT)
+    response = request("GET", url, headers=headers_canvas, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.json()
 
@@ -110,6 +112,7 @@ def fetch_module_files(
 
     module_files: list[dict] = []
     seen_file_ids: set[int] = set()
+    detail_failed = False
 
     for module in modules:
         module_id = module.get("id")
@@ -131,14 +134,18 @@ def fetch_module_files(
                 file_data = fetch_file_by_id(canvas_base_url, headers_canvas, course_id, file_id)
             except requests.RequestException as exc:
                 log_exception(f"从 Modules 获取文件详情失败，file_id={file_id}", exc)
+                detail_failed = True
                 continue
             except ValueError as exc:
                 log_exception(f"从 Modules 解析文件详情失败，file_id={file_id}", exc)
+                detail_failed = True
                 continue
 
             seen_file_ids.add(file_id)
             module_files.append(file_data)
 
+    if detail_failed:
+        raise RuntimeError("部分 Module 文件详情获取失败")
     return module_files
 
 
@@ -164,10 +171,10 @@ def collect_course_files(
         files = fetch_module_files(canvas_base_url, headers_canvas, course_id)
     except requests.RequestException as exc:
         log_exception(f"课程 {course_id} 从 Modules 获取文件失败", exc)
-        return []
+        raise RuntimeError(f"课程 {course_id} 无法获取文件") from exc
     except ValueError as exc:
         log_exception(f"课程 {course_id} Modules 响应解析失败", exc)
-        return []
+        raise RuntimeError(f"课程 {course_id} 无法解析文件") from exc
 
     folders = fetch_folders(canvas_base_url, headers_canvas, course_id)
     return add_folder_paths(files, folders)

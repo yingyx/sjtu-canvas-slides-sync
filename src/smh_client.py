@@ -1,7 +1,9 @@
 import re
+import urllib.parse
 
 import requests
 
+from http_client import request
 from logger import log, log_exception
 
 
@@ -70,7 +72,7 @@ def login_with_jaccount(smh_base_url: str, jaauth_cookie: str) -> str | None:
 def get_space_info(smh_base_url: str, smh_user_token: str) -> dict[str, str]:
     url = f"{smh_base_url}/user/v1/space/1/personal"
     params = {"user_token": smh_user_token}
-    response = requests.post(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = request("POST", url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     data = response.json()
 
@@ -83,23 +85,25 @@ def get_space_info(smh_base_url: str, smh_user_token: str) -> dict[str, str]:
 
 
 def ensure_folder(smh_base_url: str, space: dict[str, str], dir_path: str) -> None:
-    url = f"{smh_base_url}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
+    encoded_path = urllib.parse.quote(dir_path, safe="/")
+    url = f"{smh_base_url}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{encoded_path}"
     params = {"access_token": space["accessToken"]}
 
-    response = requests.put(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = request("PUT", url, params=params, timeout=REQUEST_TIMEOUT)
     if response.status_code not in (200, 201):
         response.raise_for_status()
 
 
 def list_remote_dir(smh_base_url: str, space: dict[str, str], dir_path: str) -> list[dict] | None:
-    url = f"{smh_base_url}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{dir_path}"
+    encoded_path = urllib.parse.quote(dir_path, safe="/")
+    url = f"{smh_base_url}/api/v1/directory/{space['libraryId']}/{space['spaceId']}/{encoded_path}"
     params = {
         "access_token": space["accessToken"],
         "with_path": "true",
         "filter": "onlyFile",
     }
 
-    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = request("GET", url, params=params, timeout=REQUEST_TIMEOUT)
 
     if response.status_code == 404:
         return None
@@ -113,14 +117,15 @@ def upload_file(smh_base_url: str, space: dict[str, str], local_path: str, remot
 
     size = os.path.getsize(local_path)
 
-    url = f"{smh_base_url}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{remote_path}"
+    encoded_path = urllib.parse.quote(remote_path, safe="/")
+    url = f"{smh_base_url}/api/v1/file/{space['libraryId']}/{space['spaceId']}/{encoded_path}"
     params = {
         "access_token": space["accessToken"],
         "filesize": size,
         "conflict_resolution_strategy": "overwrite",
     }
 
-    response = requests.put(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = request("PUT", url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     resp = response.json()
 
@@ -130,8 +135,7 @@ def upload_file(smh_base_url: str, space: dict[str, str], local_path: str, remot
     confirm_key = resp.get("confirmKey")
 
     if not all([domain, path, headers, confirm_key]):
-        log("获取上传地址失败")
-        return
+        raise ValueError("获取上传地址失败：响应缺少必要字段")
 
     upload_url = f"https://{domain}/{path.lstrip('/')}"
     with open(local_path, "rb") as file_obj:

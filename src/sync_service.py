@@ -1,19 +1,40 @@
 import tempfile
 import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import requests
 from requests import RequestException
 
 from canvas_client import collect_course_files
 from config import AppConfig
 from converter import convert_to_pdf, get_converted_pdf_name
+from http_client import request
 from logger import log, log_exception
 from smh_client import ensure_folder, list_remote_dir, upload_file
 
 
 REQUEST_TIMEOUT = 60
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+@dataclass
+class SyncResult:
+    discovered_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    downloaded_bytes: int = 0
+    uploaded_bytes: int = 0
+    converted_count: int = 0
+
+    @property
+    def updated(self) -> bool:
+        return self.updated_count > 0
+
+    def merge(self, other: "SyncResult") -> None:
+        for field in self.__dataclass_fields__:
+            setattr(self, field, getattr(self, field) + getattr(other, field))
 
 
 def safe_path_parts(path: str) -> list[str]:
@@ -38,8 +59,15 @@ def sync_course(
     headers_canvas: dict[str, str],
     space: dict[str, str],
     course: dict[str, str],
-) -> bool:
-    files = collect_course_files(config.canvas_base_url, headers_canvas, course["course_id"])
+) -> SyncResult:
+    result = SyncResult()
+    try:
+        files = collect_course_files(config.canvas_base_url, headers_canvas, course["course_id"])
+    except (RequestException, ValueError, RuntimeError) as exc:
+        log_exception(f"课程 {course['course_id']} 获取文件失败", exc)
+        result.failed_count = 1
+        return result
+    result.discovered_count = len(files)
 
     remote_folder = remote_path(config.save_root, course["semester"], course["folder"])
 
@@ -47,23 +75,23 @@ def sync_course(
         remote_list = list_remote_dir(config.smh_base_url, space, remote_folder)
     except RequestException as exc:
         log_exception("检查云盘目录失败", exc)
-        return False
+        result.failed_count = 1
+        return result
     except ValueError as exc:
         log_exception("解析云盘目录响应失败", exc)
-        return False
+        result.failed_count = 1
+        return result
 
     if remote_list is None:
         try:
             ensure_folder(config.smh_base_url, space, remote_folder)
         except RequestException as exc:
             log_exception("创建云盘目录失败", exc)
-            return False
+            result.failed_count = 1
+            return result
         remote_list = []
 
-    updated = False
-    downloaded_bytes = 0
-    uploaded_bytes = 0
-    converted_count = 0
+    remote_lists: dict[str, list[dict]] = {remote_folder: remote_list}
 
     for file_item in files:
         filename = Path(str(file_item["filename"]).replace("\\", "/")).name
@@ -75,6 +103,7 @@ def sync_course(
                 file_ext = ext
                 break
         if file_ext is None:
+            result.skipped_count += 1
             continue
 
         if (
@@ -82,6 +111,7 @@ def sync_course(
             and file_item.get("size", 0) > config.max_file_size_mb * 1024 * 1024
         ):
             log(f"跳过文件 {filename}（超过大小限制）")
+            result.skipped_count += 1
             continue
 
         canvas_updated = datetime.fromisoformat(file_item["updated_at"].replace("Z", "+00:00"))
@@ -90,20 +120,21 @@ def sync_course(
             tmp_dir = Path(temp_dir)
             local_path = tmp_dir / filename
             file_remote_folder = remote_path(remote_folder, file_item.get("folder_path", ""))
-            if file_remote_folder != remote_folder:
+            if file_remote_folder not in remote_lists:
                 try:
                     ensure_folder(config.smh_base_url, space, file_remote_folder)
                 except RequestException as exc:
                     log_exception(f"创建云盘子目录失败：{file_remote_folder}", exc)
+                    result.failed_count += 1
                     continue
                 try:
                     folder_list = list_remote_dir(config.smh_base_url, space, file_remote_folder)
                 except (RequestException, ValueError) as exc:
                     log_exception(f"检查云盘子目录失败：{file_remote_folder}", exc)
+                    result.failed_count += 1
                     continue
-                current_remote_list = folder_list or []
-            else:
-                current_remote_list = remote_list
+                remote_lists[file_remote_folder] = folder_list or []
+            current_remote_list = remote_lists[file_remote_folder]
             should_convert = file_ext in config.convert_extensions and config.convert_ppt
 
             if should_convert:
@@ -127,33 +158,46 @@ def sync_course(
 
             if remote_time is None or canvas_updated > remote_time:
                 try:
-                    response = requests.get(
+                    response = request(
+                        "GET",
                         file_item["url"],
                         headers=headers_canvas,
                         timeout=REQUEST_TIMEOUT,
+                        stream=True,
                     )
                     response.raise_for_status()
-                    local_path.write_bytes(response.content)
-                    downloaded_bytes += len(response.content)
+                    file_downloaded = 0
+                    with local_path.open("wb") as output:
+                        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                            if chunk:
+                                output.write(chunk)
+                                file_downloaded += len(chunk)
+                    expected_size = file_item.get("size")
+                    if expected_size is not None and file_downloaded != int(expected_size):
+                        raise RuntimeError(
+                            f"下载大小不一致：预期 {expected_size}，实际 {file_downloaded}"
+                        )
+                    result.downloaded_bytes += file_downloaded
                     if should_convert:
                         final_path = convert_to_pdf(local_path, tmp_dir)
-                        converted_count += 1
-                    uploaded_bytes += final_path.stat().st_size
+                        result.converted_count += 1
+                    uploaded_size = final_path.stat().st_size
                     upload_file(config.smh_base_url, space, str(final_path), remote_file)
-                    updated = True
-                except RequestException as exc:
+                    result.uploaded_bytes += uploaded_size
+                    result.updated_count += 1
+                except (RequestException, ValueError) as exc:
                     log_exception(f"文件传输失败：{filename}", exc)
+                    result.failed_count += 1
                     continue
                 except OSError as exc:
                     log_exception(f"文件写入失败：{filename}", exc)
+                    result.failed_count += 1
                     continue
                 except RuntimeError as exc:
                     log_exception(f"文件转换失败：{filename}", exc)
+                    result.failed_count += 1
                     continue
+            else:
+                result.skipped_count += 1
 
-    return {
-        "updated": updated,
-        "downloaded_bytes": downloaded_bytes,
-        "uploaded_bytes": uploaded_bytes,
-        "converted_count": converted_count,
-    }
+    return result

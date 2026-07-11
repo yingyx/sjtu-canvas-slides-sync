@@ -1,11 +1,13 @@
 import sys
 import argparse
+import os
+from pathlib import Path
 import requests
 from canvas_client import fetch_courses, parse_course
 from config import load_config, make_canvas_headers
 from logger import log, log_exception
 from smh_client import get_space_info, login_with_jaccount
-from sync_service import sync_course
+from sync_service import SyncResult, sync_course
 
 
 # ==========================
@@ -75,19 +77,12 @@ def main():
 
     log(f"同步模式：{mode_desc}（{semester_desc}），待处理课程数：{len(parsed)}")
 
-    updated = False
-    total_downloaded = 0
-    total_uploaded = 0
-    total_converted = 0
+    total = SyncResult()
 
     for course in parsed:
         log(f"处理课程 {course['course_id']}")
         result = sync_course(config, headers_canvas, space, course)
-        if result["updated"]:
-            updated = True
-        total_downloaded += result["downloaded_bytes"]
-        total_uploaded += result["uploaded_bytes"]
-        total_converted += result["converted_count"]
+        total.merge(result)
 
     def fmt_size(n: int) -> str:
         if n >= 1024 * 1024 * 1024:
@@ -99,12 +94,31 @@ def main():
         return f"{n} B"
 
     log(
-        f"任务完成：下载 {fmt_size(total_downloaded)}，"
-        f"上传 {fmt_size(total_uploaded)}，"
-        f"转换 PDF {total_converted} 份"
+        f"任务完成：发现 {total.discovered_count} 个，上传 {total.updated_count} 个，"
+        f"跳过 {total.skipped_count} 个，失败 {total.failed_count} 个；"
+        f"下载 {fmt_size(total.downloaded_bytes)}，"
+        f"上传 {fmt_size(total.uploaded_bytes)}，"
+        f"转换 PDF {total.converted_count} 份"
     )
 
-    if updated:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with Path(summary_path).open("a", encoding="utf-8") as summary:
+            summary.write(
+                "## Canvas 同步摘要\n\n"
+                f"- 课程：{len(parsed)}\n"
+                f"- 发现文件：{total.discovered_count}\n"
+                f"- 上传文件：{total.updated_count}\n"
+                f"- 跳过文件：{total.skipped_count}\n"
+                f"- 失败文件/课程：{total.failed_count}\n"
+                f"- 下载流量：{fmt_size(total.downloaded_bytes)}\n"
+                f"- 上传流量：{fmt_size(total.uploaded_bytes)}\n"
+                f"- 转换 PDF：{total.converted_count}\n"
+            )
+
+    if total.failed_count:
+        sys.exit(2)
+    if total.updated:
         sys.exit(0)
     else:
         sys.exit(1)
