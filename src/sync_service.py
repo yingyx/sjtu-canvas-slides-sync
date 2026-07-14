@@ -94,7 +94,10 @@ def sync_course(
     remote_lists: dict[str, list[dict]] = {remote_folder: remote_list}
 
     for file_item in files:
-        filename_parts = safe_path_parts(str(file_item.get("filename", "")))
+        canvas_filename = urllib.parse.unquote(
+            str(file_item.get("display_name") or file_item.get("filename", ""))
+        )
+        filename_parts = safe_path_parts(canvas_filename)
         filename = filename_parts[-1] if filename_parts else f"file-{file_item.get('id', 'unknown')}"
         lower = filename.lower()
 
@@ -147,7 +150,7 @@ def sync_course(
             matched = [
                 item
                 for item in current_remote_list
-                if item["name"] == urllib.parse.unquote(final_path.name)
+                if item["name"] == final_path.name
             ]
 
             if matched:
@@ -158,6 +161,7 @@ def sync_course(
                 remote_time = None
 
             if remote_time is None or canvas_updated > remote_time:
+                transfer_stage = "下载"
                 try:
                     response = request(
                         "GET",
@@ -180,22 +184,20 @@ def sync_course(
                         )
                     result.downloaded_bytes += file_downloaded
                     if should_convert:
+                        transfer_stage = "转换"
                         final_path = convert_to_pdf(local_path, tmp_dir)
                         result.converted_count += 1
                     uploaded_size = final_path.stat().st_size
+                    transfer_stage = "上传"
                     upload_file(config.smh_base_url, space, str(final_path), remote_file)
                     result.uploaded_bytes += uploaded_size
                     result.updated_count += 1
-                except (RequestException, ValueError) as exc:
-                    log_exception(f"文件传输失败：{filename}", exc)
+                except (RequestException, ValueError, RuntimeError) as exc:
+                    log_exception(f"文件{transfer_stage}失败：{filename}", exc)
                     result.failed_count += 1
                     continue
                 except OSError as exc:
-                    log_exception(f"文件写入失败：{filename}", exc)
-                    result.failed_count += 1
-                    continue
-                except RuntimeError as exc:
-                    log_exception(f"文件转换失败：{filename}", exc)
+                    log_exception(f"文件{transfer_stage}处理失败：{filename}", exc)
                     result.failed_count += 1
                     continue
             else:

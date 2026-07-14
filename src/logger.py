@@ -44,4 +44,9 @@ def log(message: str) -> None:
 
 def log_exception(context: str, exc: Exception) -> None:
     error_type = exc.__class__.__name__
-    log(f"{context}: {error_type}")
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        log(f"{context}: {error_type} (HTTP {status_code})")
+    else:
+        log(f"{context}: {error_type}")

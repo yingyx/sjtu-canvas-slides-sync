@@ -35,7 +35,7 @@ class MainExitCodeTests(unittest.TestCase):
             patch("main.fetch_courses", return_value=[{}]),
             patch("main.parse_course", return_value=course),
             patch("main.sync_course", return_value=result),
-            patch.dict("os.environ", {}, clear=False),
+            patch.dict("os.environ", {"GITHUB_STEP_SUMMARY": ""}, clear=False),
         ):
             with self.assertRaises(SystemExit) as raised:
                 main.main()

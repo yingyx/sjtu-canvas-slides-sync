@@ -1,4 +1,5 @@
 import re
+import urllib.parse
 
 import requests
 
@@ -73,7 +74,7 @@ def add_folder_paths(files: list[dict], folders: list[dict]) -> list[dict]:
     folder_paths: dict[int, str] = {}
     for folder in folders:
         folder_id = folder.get("id")
-        full_name = str(folder.get("full_name", ""))
+        full_name = urllib.parse.unquote(str(folder.get("full_name", "")))
         if folder_id is None:
             continue
         parts = full_name.replace("\\", "/").split("/")

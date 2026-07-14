@@ -35,6 +35,11 @@ class CanvasClientTests(unittest.TestCase):
 
         self.assertEqual(result[0]["folder_path"], "课件/第一章")
 
+    def test_add_folder_paths_decodes_canvas_url_encoding(self):
+        files = [{"folder_id": 11}]
+        folders = [{"id": 11, "full_name": "course files/%E8%AF%BE%E4%BB%B6"}]
+        self.assertEqual(canvas_client.add_folder_paths(files, folders)[0]["folder_path"], "课件")
+
     def test_add_folder_paths_rejects_unknown_folder(self):
         with self.assertRaises(ValueError):
             canvas_client.add_folder_paths([{"folder_id": 99}], [])
